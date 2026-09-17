@@ -1,9 +1,11 @@
 import json
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 
 from OneShot import (
+    ProgressReporter,
     build_tree,
     format_json,
     format_markdown,
@@ -82,6 +84,19 @@ class OneShotTests(unittest.TestCase):
 
         self.assertLess(document.index("## Summary"), document.index("## Structure Overview"))
         self.assertLess(document.index("## Structure Overview"), document.index("## File Contents"))
+
+    def test_progress_reporter_shows_scanning_and_percentage_updates(self):
+        stream = StringIO()
+        progress = ProgressReporter(enabled=True, stream=stream)
+
+        progress.update("Scanning files", 3)
+        progress.update("Counting tokens", 1, 4)
+        progress.finish("Complete")
+
+        output = stream.getvalue()
+        self.assertIn("Scanning files: 3 files", output)
+        self.assertIn("Counting tokens: [#####---------------]  25% (1/4)", output)
+        self.assertTrue(output.rstrip().endswith("Complete"))
 
 
 if __name__ == "__main__":

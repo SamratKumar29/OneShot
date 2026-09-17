@@ -29,5 +29,6 @@ Useful options:
 - `--ignore '*.log'` adds an ignore pattern; repeat it as needed.
 - `--no-gitignore` disables repository ignore files.
 - `--no-tokens` disables token counting.
+- `--no-progress` disables interactive CLI progress reporting.
 
 Skipped paths remain visible in the structure with a reason such as `sensitive`, `binary`, or `ignored`.

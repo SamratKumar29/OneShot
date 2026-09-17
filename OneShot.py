@@ -6,10 +6,10 @@ import argparse
 import fnmatch
 import json
 import os
-import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from io import TextIOBase
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -38,6 +38,37 @@ SENSITIVE_PATTERNS = (
     ".env", ".env.*", "*.pem", "*.key", "*.pfx", "*.p12", "id_rsa*", "id_dsa*",
     "credentials*.json", "secrets*", "secret.*", "salt.txt", "smek.txt", "smpk.txt", "*.secret",
 )
+
+
+class ProgressReporter:
+    def __init__(self, enabled: bool | None = None, stream: TextIOBase | None = None):
+        self.stream = stream or sys.stderr
+        self.enabled = self.stream.isatty() if enabled is None else enabled
+        self.last_length = 0
+
+    def update(self, phase: str, current: int, total: int | None = None) -> None:
+        if not self.enabled:
+            return
+        if total:
+            percent = current * 100 // total
+            bar_width = 20
+            filled = percent * bar_width // 100
+            bar = "#" * filled + "-" * (bar_width - filled)
+            message = f"{phase}: [{bar}] {percent:3d}% ({current}/{total})"
+        else:
+            message = f"{phase}: {current} files"
+        padding = max(0, self.last_length - len(message))
+        self.stream.write(f"\r{message}{' ' * padding}")
+        self.stream.flush()
+        self.last_length = len(message)
+
+    def finish(self, message: str) -> None:
+        if not self.enabled:
+            return
+        padding = max(0, self.last_length - len(message))
+        self.stream.write(f"\r{message}{' ' * padding}\n")
+        self.stream.flush()
+        self.last_length = 0
 
 
 @dataclass
@@ -139,19 +170,24 @@ def _relative(path: Path, root: Path) -> str:
 
 
 def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = True,
-         extra_patterns: Iterable[str] = ()) -> list[FileEntry]:
+         extra_patterns: Iterable[str] = (), progress: Callable[[int], None] | None = None) -> list[FileEntry]:
     target = target.resolve()
     root = target if target.is_dir() else target.parent
     matcher = IgnoreMatcher(root, use_gitignore, extra_patterns)
     includes = tuple(include_globs)
     entries: list[FileEntry] = []
+    processed = 0
 
     def add_file(path: Path) -> None:
+        nonlocal processed
         relative = _relative(path, root)
         if includes and not any(fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in includes):
             return
         content, reason = classify_file(path)
         entries.append(FileEntry(relative, content, reason))
+        processed += 1
+        if progress:
+            progress(processed)
 
     if target.is_file():
         add_file(target)
@@ -176,6 +212,9 @@ def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = 
             if matcher.matches(path):
                 if not includes or any(fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in includes):
                     entries.append(FileEntry(relative, reason="ignored"))
+                    processed += 1
+                    if progress:
+                        progress(processed)
             else:
                 add_file(path)
     return sorted(entries, key=lambda entry: (entry.path.lower(), not entry.is_directory))
@@ -322,6 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ignore", action="append", default=[], help="Additional ignore glob; repeatable")
     parser.add_argument("--no-gitignore", action="store_true", help="Do not read .gitignore files")
     parser.add_argument("--no-tokens", action="store_true", help="Disable token counting")
+    parser.add_argument("--no-progress", action="store_true", help="Disable CLI progress reporting")
     return parser
 
 
@@ -336,11 +376,21 @@ def main(argv: list[str] | None = None) -> int:
         if output == target or (target.is_dir() and target in output.parents):
             print("error: output must not be inside the input path", file=sys.stderr)
             return 2
-        entries = scan(target, args.include, not args.no_gitignore, args.ignore)
+        progress = ProgressReporter(enabled=None if not args.no_progress else False)
+        entries = scan(
+            target,
+            args.include,
+            not args.no_gitignore,
+            args.ignore,
+            progress=lambda current: progress.update("Scanning files", current),
+        )
+        progress.finish(f"Scanning complete: {len(entries)} files")
         counter = get_token_counter(args.no_tokens)
-        for entry in entries:
-            if not entry.skipped and not entry.is_directory:
-                entry.tokens = counter(entry.content or "")
+        files_to_process = [entry for entry in entries if not entry.skipped and not entry.is_directory]
+        for current, entry in enumerate(files_to_process, start=1):
+            entry.tokens = counter(entry.content or "")
+            progress.update("Counting tokens", current, len(files_to_process))
+        progress.finish("Token counting complete")
         summary = summary_for(entries, not args.no_tokens)
         tree = build_tree(entries, target.name if target.is_dir() else target.parent.name)
         if args.format == "md":
@@ -349,8 +399,10 @@ def main(argv: list[str] | None = None) -> int:
             document = format_xml(tree, entries, summary)
         else:
             document = format_json(tree, entries, summary)
+        progress.update("Writing output", 0, 1)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(document, encoding="utf-8")
+        progress.finish("Writing output complete")
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
