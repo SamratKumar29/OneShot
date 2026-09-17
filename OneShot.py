@@ -317,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pack a local repository or file for LLM input.")
     parser.add_argument("--path", required=True, help="File or directory to pack")
     parser.add_argument("--format", choices=("md", "xml", "json"), default="md", help="Output format")
-    parser.add_argument("--output", help="Output file path; defaults to repo2llm-output.<format>")
+    parser.add_argument("--output", help="Output file path; defaults to OneShot-output.<format>")
     parser.add_argument("--include", action="append", default=[], help="Include glob; repeatable")
     parser.add_argument("--ignore", action="append", default=[], help="Additional ignore glob; repeatable")
     parser.add_argument("--no-gitignore", action="store_true", help="Do not read .gitignore files")
@@ -331,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     if not target.exists():
         print(f"error: input path does not exist: {target}", file=sys.stderr)
         return 2
-    output = Path(args.output or f"repo2llm-output.{args.format}").expanduser().resolve()
+    output = Path(args.output or f"OneShot-output.{args.format}").expanduser().resolve()
     try:
         if output == target or (target.is_dir() and target in output.parents):
             print("error: output must not be inside the input path", file=sys.stderr)

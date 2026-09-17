@@ -1,6 +1,6 @@
-# repo2llm
+# OneShot
 
-`repo2llm` packs a local file or directory into one compact document for LLM input. It emits a short directory tree first, followed immediately by included file contents with clear relative paths.
+`OneShot` packs a local file or directory into one compact document for LLM input. It emits a short directory tree first, followed immediately by included file contents with clear relative paths.
 
 Sensitive files and binary files are listed in the tree but their contents are never included. Built-in ignores cover common dependency, build, cache, VCS, and generated directories. Repository `.gitignore` files and an optional root `.repopackignore` are also respected.
 
@@ -15,13 +15,13 @@ python -m pip install -r requirements.txt
 ## Usage
 
 ```powershell
-python repo2llm.py --path C:\Projects\my-repo --format md --output repo.md
-python repo2llm.py --path C:\Projects\my-repo --format xml --output repo.xml
-python repo2llm.py --path C:\Projects\my-repo --format json --output repo.json
-python repo2llm.py --path C:\Projects\my-repo\src\main.py --format md
+python OneShot.py --path C:\Projects\my-repo --format md --output repo.md
+python OneShot.py --path C:\Projects\my-repo --format xml --output repo.xml
+python OneShot.py --path C:\Projects\my-repo --format json --output repo.json
+python OneShot.py --path C:\Projects\my-repo\src\main.py --format md
 ```
 
-The default output is `repo2llm-output.<format>` in the current directory. The input path may point anywhere on the machine.
+The default output is `OneShot-output.<format>` in the current directory. The input path may point anywhere on the machine.
 
 Useful options:
 

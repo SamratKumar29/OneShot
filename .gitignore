@@ -30,7 +30,6 @@ dist/
 .eggs/
 
 # OneShot generated bundles
-repo2llm-output.*
 OneShot-output.*
 MMWAVE_L_SDK_06_01_00_05.md
 

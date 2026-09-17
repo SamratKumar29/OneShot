@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from repo2llm import (
+from OneShot import (
     build_tree,
     format_json,
     format_markdown,
@@ -14,7 +14,7 @@ from repo2llm import (
 )
 
 
-class Repo2LlmTests(unittest.TestCase):
+class OneShotTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
