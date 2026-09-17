@@ -1,0 +1,52 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches and generated files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+#data files
+data/*
+data/
+output/
+output/*
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# OneShot generated bundles
+repo2llm-output.*
+OneShot-output.*
+MMWAVE_L_SDK_06_01_00_05.md
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_dsa*
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
