@@ -151,11 +151,13 @@ def is_sensitive(path: Path) -> bool:
     return any(fnmatch.fnmatch(name, pattern.lower()) for pattern in SENSITIVE_PATTERNS)
 
 
-def classify_file(path: Path) -> tuple[str | None, str | None]:
+def classify_file(path: Path, read_content: bool = True) -> tuple[str | None, str | None]:
     if is_sensitive(path):
         return None, "sensitive"
     if path.suffix.lower() in BINARY_EXTENSIONS:
         return None, "binary"
+    if not read_content:
+        return None, None
     try:
         data = path.read_bytes()
     except OSError as error:
@@ -170,7 +172,8 @@ def _relative(path: Path, root: Path) -> str:
 
 
 def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = True,
-         extra_patterns: Iterable[str] = (), progress: Callable[[int], None] | None = None) -> list[FileEntry]:
+         extra_patterns: Iterable[str] = (), progress: Callable[[int], None] | None = None,
+         read_content: bool = True) -> list[FileEntry]:
     target = target.resolve()
     root = target if target.is_dir() else target.parent
     matcher = IgnoreMatcher(root, use_gitignore, extra_patterns)
@@ -183,7 +186,7 @@ def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = 
         relative = _relative(path, root)
         if includes and not any(fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in includes):
             return
-        content, reason = classify_file(path)
+        content, reason = classify_file(path, read_content)
         entries.append(FileEntry(relative, content, reason))
         processed += 1
         if progress:
@@ -220,10 +223,19 @@ def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = 
     return sorted(entries, key=lambda entry: (entry.path.lower(), not entry.is_directory))
 
 
+def apply_manual_deselection(entries: list[FileEntry], deselected: set[str]) -> None:
+    for entry in entries:
+        if entry.path in deselected and not entry.is_directory and not entry.skipped:
+            entry.content = None
+            entry.reason = "deselected"
+
+
 def get_token_counter(disabled: bool = False) -> Callable[[str], int]:
     if disabled:
         return lambda text: 0
     try:
+        resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(resource_root / "tiktoken_cache"))
         import tiktoken
         encoder = tiktoken.get_encoding("cl100k_base")
         return lambda text: len(encoder.encode(text))
@@ -352,6 +364,28 @@ def format_json(tree: str, entries: list[FileEntry], summary: dict[str, int]) ->
     return json.dumps({"summary": summary, "tree": tree, "files": files}, indent=2, ensure_ascii=False)
 
 
+def render_document(entries: list[FileEntry], root_name: str, format_name: str,
+                    tokens_enabled: bool = True,
+                    progress: Callable[[str, int, int | None], None] | None = None) -> tuple[str, dict[str, int]]:
+    counter = get_token_counter(not tokens_enabled)
+    files_to_process = [entry for entry in entries if not entry.skipped and not entry.is_directory]
+    for current, entry in enumerate(files_to_process, start=1):
+        entry.tokens = counter(entry.content or "")
+        if progress:
+            progress("Counting tokens", current, len(files_to_process))
+    summary = summary_for(entries, tokens_enabled)
+    tree = build_tree(entries, root_name)
+    if format_name == "md":
+        document = format_markdown(tree, entries, summary)
+    elif format_name == "xml":
+        document = format_xml(tree, entries, summary)
+    elif format_name == "json":
+        document = format_json(tree, entries, summary)
+    else:
+        raise ValueError(f"unsupported format: {format_name}")
+    return document, summary
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pack a local repository or file for LLM input.")
     parser.add_argument("--path", required=True, help="File or directory to pack")
@@ -385,20 +419,17 @@ def main(argv: list[str] | None = None) -> int:
             progress=lambda current: progress.update("Scanning files", current),
         )
         progress.finish(f"Scanning complete: {len(entries)} files")
-        counter = get_token_counter(args.no_tokens)
-        files_to_process = [entry for entry in entries if not entry.skipped and not entry.is_directory]
-        for current, entry in enumerate(files_to_process, start=1):
-            entry.tokens = counter(entry.content or "")
-            progress.update("Counting tokens", current, len(files_to_process))
+        def report_progress(phase: str, current: int, total: int | None) -> None:
+            progress.update(phase, current, total)
+
+        document, summary = render_document(
+            entries,
+            target.name if target.is_dir() else target.parent.name,
+            args.format,
+            tokens_enabled=not args.no_tokens,
+            progress=report_progress,
+        )
         progress.finish("Token counting complete")
-        summary = summary_for(entries, not args.no_tokens)
-        tree = build_tree(entries, target.name if target.is_dir() else target.parent.name)
-        if args.format == "md":
-            document = format_markdown(tree, entries, summary)
-        elif args.format == "xml":
-            document = format_xml(tree, entries, summary)
-        else:
-            document = format_json(tree, entries, summary)
         progress.update("Writing output", 0, 1)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(document, encoding="utf-8")

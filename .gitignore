@@ -26,6 +26,7 @@ output/*
 # Packaging and build output
 build/
 dist/
+assets/tiktoken_cache/
 *.egg-info/
 .eggs/
 

@@ -6,12 +6,14 @@ from pathlib import Path
 
 from OneShot import (
     ProgressReporter,
+    apply_manual_deselection,
     build_tree,
     format_json,
     format_markdown,
     format_xml,
     get_token_counter,
     scan,
+    render_document,
     summary_for,
 )
 
@@ -64,6 +66,41 @@ class OneShotTests(unittest.TestCase):
         entries = scan(target)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].path, "main.py")
+
+    def test_preview_scan_does_not_read_file_content(self):
+        entries = scan(self.root, read_content=False)
+        by_path = {entry.path: entry for entry in entries}
+
+        self.assertIsNone(by_path["src/main.py"].content)
+        self.assertIsNone(by_path["src/main.py"].reason)
+        self.assertEqual(by_path[".env"].reason, "sensitive")
+
+    def test_include_pattern_matches_same_filename_in_nested_folders(self):
+        (self.root / "CMakeLists.txt").write_text("root", encoding="utf-8")
+        (self.root / "src" / "CMakeLists.txt").write_text("nested", encoding="utf-8")
+        (self.root / "src" / "other.txt").write_text("exclude", encoding="utf-8")
+
+        entries = scan(self.root, include_globs=["CMakeLists.txt"], read_content=False)
+
+        self.assertEqual({entry.path for entry in entries}, {"CMakeLists.txt", "src/CMakeLists.txt"})
+
+    def test_manual_deselection_skips_only_selected_included_files(self):
+        entries = scan(self.root)
+        apply_manual_deselection(entries, {"src/main.py", ".env"})
+        by_path = {entry.path: entry for entry in entries}
+
+        self.assertEqual(by_path["src/main.py"].reason, "deselected")
+        self.assertIsNone(by_path["src/main.py"].content)
+        self.assertEqual(by_path[".env"].reason, "sensitive")
+
+    def test_render_document_returns_summary_and_document(self):
+        entries = scan(self.root)
+        document, summary = render_document(entries, self.root.name, "json", tokens_enabled=False)
+        parsed = json.loads(document)
+
+        self.assertEqual(summary, parsed["summary"])
+        self.assertEqual(summary["files_included"], 1)
+        self.assertEqual(summary["files_skipped"], 4)
 
     def test_large_structure_is_replaced_with_compact_overview(self):
         entries = [
