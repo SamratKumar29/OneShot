@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from io import StringIO
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from OneShot import (
     get_token_counter,
     scan,
     render_document,
+    render_search_results,
+    search_file_lines,
     summary_for,
 )
 
@@ -83,6 +86,60 @@ class OneShotTests(unittest.TestCase):
         entries = scan(self.root, include_globs=["CMakeLists.txt"], read_content=False)
 
         self.assertEqual({entry.path for entry in entries}, {"CMakeLists.txt", "src/CMakeLists.txt"})
+
+    def test_search_file_lines_captures_wildcard_and_can_include_pattern_text(self):
+        (self.root / "src" / "version.arxml").write_text(
+            "<AUTOSAR schemaLocation='http://autosar.org/schema/r4.0 AUTOSAR_00051.xsd'>\n",
+            encoding="utf-8",
+        )
+        (self.root / "src" / "second.arxml").write_text(
+            "<AUTOSAR schemaLocation='http://autosar.org/schema/r4.0 AUTOSAR_00052.xsd'>\n",
+            encoding="utf-8",
+        )
+        (self.root / "src" / "double-quoted.arxml").write_text(
+            '<AUTOSAR schemaLocation="http://autosar.org/schema/r4.0 AUTOSAR_00053.xsd">\n',
+            encoding="utf-8",
+        )
+
+        results = search_file_lines(self.root, "*.arxml", "schemaLocation='*'")
+        full_results = search_file_lines(self.root, "*.arxml", "schemaLocation='*'", True)
+        selected_results = search_file_lines(
+            self.root,
+            "*.arxml",
+            "schemaLocation='*'",
+            selected_paths={"src/second.arxml"},
+        )
+
+        self.assertEqual(
+            results,
+            [
+                ("src/double-quoted.arxml", "http://autosar.org/schema/r4.0 AUTOSAR_00053.xsd"),
+                ("src/second.arxml", "http://autosar.org/schema/r4.0 AUTOSAR_00052.xsd"),
+                ("src/version.arxml", "http://autosar.org/schema/r4.0 AUTOSAR_00051.xsd"),
+            ],
+        )
+        self.assertEqual(
+            full_results,
+            [
+                ("src/double-quoted.arxml", 'schemaLocation="http://autosar.org/schema/r4.0 AUTOSAR_00053.xsd"'),
+                ("src/second.arxml", "schemaLocation='http://autosar.org/schema/r4.0 AUTOSAR_00052.xsd'"),
+                ("src/version.arxml", "schemaLocation='http://autosar.org/schema/r4.0 AUTOSAR_00051.xsd'"),
+            ],
+        )
+        self.assertEqual(selected_results, [("src/second.arxml", "http://autosar.org/schema/r4.0 AUTOSAR_00052.xsd")])
+
+    def test_search_result_formats_support_both_orders(self):
+        results = [("src/version.arxml", "AUTOSAR_00051.xsd")]
+
+        text = render_search_results(results, "txt", "match_path")
+        markdown = render_search_results(results, "md", "match_path")
+        json_result = json.loads(render_search_results(results, "json", "match_path"))
+        xml_result = ET.fromstring(render_search_results(results, "xml", "match_path"))
+
+        self.assertEqual(text, "AUTOSAR_00051.xsd : src/version.arxml\n")
+        self.assertIn("| Match | Path |", markdown)
+        self.assertEqual(list(json_result["results"][0]), ["match", "path"])
+        self.assertEqual([child.tag for child in xml_result.find("result")], ["match", "path"])
 
     def test_manual_deselection_skips_only_selected_included_files(self):
         entries = scan(self.root)

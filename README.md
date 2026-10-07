@@ -12,6 +12,10 @@ Output is available as Markdown, XML, or JSON. OneShot automatically protects co
 
 The Windows installer creates a normal Start Menu application. After installation, launch **OneShot** from the Start Menu.
 
+### Search file contents
+
+Open the **Search** tab, choose a folder, enter a file name pattern such as `*.arxml`, then click **Scan**. Select or deselect files and folders in the tree before clicking **Generate**. Enter the line pattern to find; a `*` captures matching text. By default, results contain the captured value; enable **Include look-for text in results** to include the matched fragment. Choose Markdown (`md`), XML (`xml`), JSON (`json`), or plain text (`txt`), and select whether each result is ordered `path : match` or `match : path`. Searches use the same ignored-directory and `.gitignore` rules as project scans.
+
 ### Select a project
 
 1. Click **Browse...** beside **Project folder** and choose a project directory.

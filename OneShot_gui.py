@@ -9,7 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from OneShot import FileEntry, apply_manual_deselection, render_document, scan
+from OneShot import FileEntry, apply_manual_deselection, render_document, render_search_results, scan, search_file_lines
 
 
 def patterns_from_text(value: str) -> list[str]:
@@ -27,10 +27,23 @@ class OneShotApp(tk.Tk):
         self.include_var = tk.StringVar()
         self.ignore_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(Path.cwd() / "OneShot-output.md"))
+        self.search_folder_var = tk.StringVar()
+        self.search_filename_var = tk.StringVar(value="*.arxml")
+        self.search_pattern_var = tk.StringVar(value="schemaLocation='*'")
+        self.search_output_var = tk.StringVar(value=str(Path.cwd() / "OneShot-search-results.txt"))
+        self.search_format_var = tk.StringVar(value="txt")
+        self.search_order_var = tk.StringVar(value="path_match")
         self.format_var = tk.StringVar(value="md")
         self.gitignore_var = tk.BooleanVar(value=True)
         self.tokens_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Choose a project folder to begin.")
+        self.search_include_var = tk.BooleanVar(value=False)
+        self.search_status_var = tk.StringVar(value="Choose a folder and enter a search pattern.")
+        self.search_entries: list[FileEntry] = []
+        self.search_checked: set[str] = set()
+        self.search_item_paths: dict[str, str] = {}
+        self.search_scanned_folder: Path | None = None
+        self.search_scanned_pattern = ""
         self.queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.entries: list[FileEntry] = []
         self.checked: set[str] = set()
@@ -67,9 +80,18 @@ class OneShotApp(tk.Tk):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        settings = ttk.Frame(self, padding=12)
+        self.tabs = ttk.Notebook(self)
+        self.tabs.grid(row=0, column=0, sticky="nsew")
+        self.bundle_frame = ttk.Frame(self.tabs)
+        self.search_frame = ttk.Frame(self.tabs, padding=12)
+        self.tabs.add(self.bundle_frame, text="Bundle")
+        self.tabs.add(self.search_frame, text="Search")
+        self.bundle_frame.columnconfigure(0, weight=1)
+        self.bundle_frame.rowconfigure(1, weight=1)
+
+        settings = ttk.Frame(self.bundle_frame, padding=12)
         settings.grid(row=0, column=0, sticky="ew")
         settings.columnconfigure(1, weight=1)
 
@@ -99,7 +121,7 @@ class OneShotApp(tk.Tk):
         ignore_entry.bind("<Return>", lambda _event: self._start_scan())
         ttk.Checkbutton(settings, text="Respect .gitignore", variable=self.gitignore_var).grid(row=5, column=1, columnspan=2, sticky="w", pady=4)
 
-        tree_frame = ttk.Frame(self, padding=(12, 0, 12, 8))
+        tree_frame = ttk.Frame(self.bundle_frame, padding=(12, 0, 12, 8))
         tree_frame.grid(row=1, column=0, sticky="nsew")
         tree_frame.columnconfigure(0, weight=1)
         tree_frame.rowconfigure(0, weight=1)
@@ -116,7 +138,7 @@ class OneShotApp(tk.Tk):
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.bind("<ButtonRelease-1>", self._tree_click)
 
-        actions = ttk.Frame(self, padding=(12, 0, 12, 12))
+        actions = ttk.Frame(self.bundle_frame, padding=(12, 0, 12, 12))
         actions.grid(row=2, column=0, sticky="ew")
         actions.columnconfigure(1, weight=1)
         ttk.Button(actions, text="Select all", command=lambda: self._set_all(True)).grid(row=0, column=0, padx=(0, 6), pady=4)
@@ -136,6 +158,94 @@ class OneShotApp(tk.Tk):
         self.progress = ttk.Progressbar(actions, mode="determinate")
         self.progress.grid(row=3, column=0, columnspan=5, sticky="ew", pady=(10, 4))
         ttk.Label(actions, textvariable=self.status_var).grid(row=4, column=0, columnspan=5, sticky="w")
+        self._build_search_ui()
+
+    def _build_search_ui(self) -> None:
+        self.search_frame.columnconfigure(1, weight=1)
+        self.search_frame.rowconfigure(5, weight=1)
+        ttk.Label(self.search_frame, text="Search folder").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(self.search_frame, textvariable=self.search_folder_var).grid(row=0, column=1, sticky="ew", pady=4)
+        self.search_browse_button = ttk.Button(self.search_frame, text="Browse...", command=self._browse_search_folder)
+        self.search_browse_button.grid(row=0, column=2, padx=(8, 0), pady=4)
+
+        ttk.Label(self.search_frame, text="File name").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(self.search_frame, textvariable=self.search_filename_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
+        ttk.Label(self.search_frame, text="Look for").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(self.search_frame, textvariable=self.search_pattern_var).grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
+        ttk.Checkbutton(
+            self.search_frame,
+            text="Include look-for text in results",
+            variable=self.search_include_var,
+        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
+
+        self.search_scan_button = ttk.Button(self.search_frame, text="Scan", command=self._start_search_scan)
+        self.search_scan_button.grid(row=4, column=2, sticky="e", pady=4)
+
+        tree_frame = ttk.Frame(self.search_frame)
+        tree_frame.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 8))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        self.search_tree = ttk.Treeview(tree_frame, columns=("path", "state"), show="tree headings", selectmode="browse")
+        self.search_tree.heading("#0", text="Search files")
+        self.search_tree.heading("path", text="Relative path")
+        self.search_tree.heading("state", text="Status")
+        self.search_tree.column("#0", width=280, anchor="w")
+        self.search_tree.column("path", width=480, anchor="w")
+        self.search_tree.column("state", width=150, anchor="w")
+        self.search_tree.grid(row=0, column=0, sticky="nsew")
+        search_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.search_tree.yview)
+        search_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.search_tree.configure(yscrollcommand=search_scrollbar.set)
+        self.search_tree.bind("<ButtonRelease-1>", self._search_tree_click)
+
+        actions = ttk.Frame(self.search_frame)
+        actions.grid(row=6, column=0, columnspan=3, sticky="ew")
+        actions.columnconfigure(2, weight=1)
+        ttk.Button(actions, text="Select all", command=lambda: self._search_set_all(True)).grid(row=0, column=0, padx=(0, 6), pady=4)
+        ttk.Button(actions, text="Deselect all", command=lambda: self._search_set_all(False)).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(actions, text="Format").grid(row=0, column=2, sticky="e", padx=(8, 6))
+        self.search_format_combo = ttk.Combobox(
+            actions,
+            textvariable=self.search_format_var,
+            values=("md", "xml", "json", "txt"),
+            state="readonly",
+            width=7,
+        )
+        self.search_format_combo.grid(row=0, column=3, sticky="w")
+        self.search_format_combo.bind("<<ComboboxSelected>>", self._search_format_changed)
+
+        ttk.Radiobutton(actions, text="path : match", variable=self.search_order_var, value="path_match").grid(row=1, column=2, sticky="e", padx=(8, 6), pady=4)
+        ttk.Radiobutton(actions, text="match : path", variable=self.search_order_var, value="match_path").grid(row=1, column=3, sticky="w", pady=4)
+
+        ttk.Label(actions, text="Output file").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(actions, textvariable=self.search_output_var).grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
+        self.search_save_button = ttk.Button(actions, text="Browse...", command=self._save_search_output)
+        self.search_save_button.grid(row=2, column=3, padx=(8, 0), pady=4)
+        self.search_generate_button = ttk.Button(actions, text="Generate", command=self._start_search_generate)
+        self.search_generate_button.grid(row=3, column=0, columnspan=4, sticky="e", pady=(8, 4))
+
+        self.search_progress = ttk.Progressbar(self.search_frame, mode="determinate", maximum=100, value=0)
+        self.search_progress.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        ttk.Label(self.search_frame, textvariable=self.search_status_var).grid(row=8, column=0, columnspan=3, sticky="w")
+
+    def _browse_search_folder(self) -> None:
+        selected = filedialog.askdirectory(title="Choose a folder to search")
+        if selected:
+            self.search_folder_var.set(selected)
+
+    def _save_search_output(self) -> None:
+        selected = filedialog.asksaveasfilename(
+            title="Choose search results file",
+            defaultextension=f".{self.search_format_var.get()}",
+            filetypes=[("Markdown", "*.md"), ("XML", "*.xml"), ("JSON", "*.json"), ("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if selected:
+            self.search_output_var.set(selected)
+
+    def _search_format_changed(self, _event: tk.Event | None = None) -> None:
+        output = Path(self.search_output_var.get())
+        if output.name:
+            self.search_output_var.set(str(output.with_suffix(f".{self.search_format_var.get()}")))
 
     def _browse_folder(self) -> None:
         selected = filedialog.askdirectory(title="Choose a project folder")
@@ -156,8 +266,107 @@ class OneShotApp(tk.Tk):
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.browse_button, self.scan_button, self.save_button, self.generate_button):
+        for widget in (
+            self.browse_button, self.scan_button, self.save_button, self.generate_button,
+            self.search_browse_button, self.search_save_button, self.search_scan_button,
+            self.search_generate_button,
+        ):
             widget.configure(state=state)
+
+    def _start_search_scan(self) -> None:
+        if self.busy:
+            return
+        folder = Path(self.search_folder_var.get()).expanduser()
+        filename_pattern = self.search_filename_var.get().strip()
+        if not folder.is_dir():
+            messagebox.showerror("Invalid folder", "Choose an existing folder to search.")
+            return
+        if not filename_pattern:
+            messagebox.showerror("Missing file pattern", "Enter a file name pattern.")
+            return
+
+        self._set_busy(True)
+        self.search_progress.configure(value=0, maximum=100)
+        self.search_status_var.set("Scanning matching files...")
+        threading.Thread(
+            target=self._search_scan_worker,
+            args=(folder, filename_pattern),
+            daemon=True,
+        ).start()
+
+    def _search_scan_worker(self, folder: Path, filename_pattern: str) -> None:
+        try:
+            entries = scan(folder, include_globs=(filename_pattern,), read_content=False)
+            matched_files = sum(not entry.is_directory for entry in entries)
+            self.queue.put(("search_scan", (entries, folder, filename_pattern, matched_files)))
+        except Exception as error:
+            self.queue.put(("search_error", str(error)))
+
+    def _start_search_generate(self) -> None:
+        if self.busy:
+            return
+        folder = Path(self.search_folder_var.get()).expanduser()
+        output = Path(self.search_output_var.get()).expanduser()
+        filename_pattern = self.search_filename_var.get().strip()
+        line_pattern = self.search_pattern_var.get()
+        if not folder.is_dir():
+            messagebox.showerror("Invalid folder", "Choose an existing folder to search.")
+            return
+        if not line_pattern:
+            messagebox.showerror("Missing search pattern", "Enter content to look for.")
+            return
+        if self.search_scanned_folder != folder.resolve() or self.search_scanned_pattern != filename_pattern:
+            messagebox.showerror("Scan required", "Scan the folder and file pattern before generating results.")
+            return
+        if not output.name:
+            messagebox.showerror("Invalid output", "Choose an output file.")
+            return
+
+        selected_paths = set(self.search_checked)
+        self._set_busy(True)
+        self.search_progress.configure(value=0, maximum=1)
+        self.search_status_var.set("Searching selected files...")
+        threading.Thread(
+            target=self._search_generate_worker,
+            args=(
+                folder,
+                filename_pattern,
+                line_pattern,
+                self.search_include_var.get(),
+                selected_paths,
+                self.search_format_var.get(),
+                self.search_order_var.get(),
+                output,
+            ),
+            daemon=True,
+        ).start()
+
+    def _search_generate_worker(
+        self,
+        folder: Path,
+        filename_pattern: str,
+        line_pattern: str,
+        include_pattern_text: bool,
+        selected_paths: set[str],
+        output_format: str,
+        order: str,
+        output: Path,
+    ) -> None:
+        try:
+            results = search_file_lines(
+                folder,
+                filename_pattern,
+                line_pattern,
+                include_pattern_text,
+                selected_paths,
+                progress=lambda current, total: self.queue.put(("search_progress", (current, total))),
+            )
+            document = render_search_results(results, output_format, order)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(document, encoding="utf-8")
+            self.queue.put(("search_generated", (output, len(results))))
+        except Exception as error:
+            self.queue.put(("search_error", str(error)))
 
     def _start_scan(self) -> None:
         if self.busy:
@@ -219,6 +428,104 @@ class OneShotApp(tk.Tk):
             self.status_var.set(f"Matched {matched_files} files. Select or deselect files to include.")
         else:
             self.status_var.set(f"Found {matched_files} files. Select or deselect files to include.")
+
+    def _populate_search_tree(self, scan_result: tuple[list[FileEntry], Path, str, int]) -> None:
+        entries, folder, filename_pattern, matched_files = scan_result
+        self.search_tree.delete(*self.search_tree.get_children())
+        self.search_item_paths.clear()
+        self.search_entries = entries
+        self.search_checked = {
+            entry.path for entry in entries
+            if not entry.skipped and not entry.is_directory
+        }
+        self.search_scanned_folder = folder.resolve()
+        self.search_scanned_pattern = filename_pattern
+        root_id = self.search_tree.insert("", "end", text=folder.name or "Project", values=("", ""), open=True)
+        self.search_item_paths[root_id] = ""
+        nodes: dict[str, str] = {"": root_id}
+        for entry in entries:
+            parts = Path(entry.path).parts
+            parent_key = ""
+            for index, part in enumerate(parts):
+                key = "/".join(parts[: index + 1])
+                if key not in nodes:
+                    item_id = self.search_tree.insert(
+                        nodes[parent_key], "end", text="", values=(key, ""), open=True
+                    )
+                    nodes[key] = item_id
+                    self.search_item_paths[item_id] = key
+                parent_key = key
+            self._search_refresh_item(nodes["/".join(parts)], entry)
+        self._search_refresh_all()
+        self.search_progress.configure(value=100)
+        self.search_status_var.set(f"Found {matched_files} matching files. Select or deselect files to include.")
+
+    def _search_descendant_files(self, path: str) -> list[str]:
+        prefix = f"{path}/" if path else ""
+        return [
+            entry.path for entry in self.search_entries
+            if not entry.is_directory and not entry.skipped
+            and (not path or entry.path == path or entry.path.startswith(prefix))
+        ]
+
+    def _search_refresh_item(self, item_id: str, entry: FileEntry | None = None) -> None:
+        path = self.search_item_paths.get(item_id, "")
+        current = entry or next((item for item in self.search_entries if item.path == path), None)
+        if current is not None and current.skipped:
+            checkbox_state = "skipped"
+        else:
+            files = self._search_descendant_files(path)
+            if not files or all(file_path in self.search_checked for file_path in files):
+                checkbox_state = "checked"
+            elif any(file_path in self.search_checked for file_path in files):
+                checkbox_state = "partial"
+            else:
+                checkbox_state = "unchecked"
+        if current is None or current.is_directory:
+            status = "folder"
+        elif current.skipped:
+            status = f"skipped: {current.reason}"
+        elif path in self.search_checked:
+            status = "included"
+        else:
+            status = "deselected"
+        self.search_tree.item(
+            item_id,
+            image=self.checkbox_images[checkbox_state],
+            text=Path(path).name if path else (self.search_scanned_folder.name if self.search_scanned_folder else "Project"),
+            values=(path, status),
+        )
+
+    def _search_refresh_all(self) -> None:
+        for item_id in self.search_item_paths:
+            path = self.search_item_paths[item_id]
+            entry = next((item for item in self.search_entries if item.path == path), None)
+            self._search_refresh_item(item_id, entry)
+
+    def _search_tree_click(self, event: tk.Event) -> str | None:
+        item_id = self.search_tree.identify_row(event.y)
+        if not item_id or item_id not in self.search_item_paths:
+            return None
+        path = self.search_item_paths[item_id]
+        entry = next((item for item in self.search_entries if item.path == path), None)
+        if entry is not None and entry.skipped:
+            return "break"
+        descendants = self._search_descendant_files(path)
+        new_value = not descendants or not all(file_path in self.search_checked for file_path in descendants)
+        for descendant in descendants:
+            if new_value:
+                self.search_checked.add(descendant)
+            else:
+                self.search_checked.discard(descendant)
+        self._search_refresh_all()
+        return "break"
+
+    def _search_set_all(self, selected: bool) -> None:
+        self.search_checked = {
+            entry.path for entry in self.search_entries
+            if selected and not entry.skipped and not entry.is_directory
+        }
+        self._search_refresh_all()
 
     def _descendant_files(self, path: str) -> list[str]:
         prefix = f"{path}/" if path else ""
@@ -332,18 +639,37 @@ class OneShotApp(tk.Tk):
                     self.progress.configure(mode="determinate", value=0)
                     self._populate_tree(payload)  # type: ignore[arg-type]
                     self._set_busy(False)
+                elif kind == "search_scan":
+                    self.search_progress.configure(value=0)
+                    self._populate_search_tree(payload)  # type: ignore[arg-type]
+                    self._set_busy(False)
                 elif kind == "progress":
                     phase, current, total = payload  # type: ignore[misc]
                     self.progress.configure(maximum=total or 1, value=current)
                     self.status_var.set(f"{phase} ({current}/{total or 0})")
+                elif kind == "search_progress":
+                    current, total = payload  # type: ignore[misc]
+                    self.search_progress.configure(maximum=total or 1, value=current)
+                    self.search_status_var.set(f"Searching selected files ({current}/{total})")
                 elif kind == "generated":
                     output, summary = payload  # type: ignore[misc]
                     self._set_busy(False)
                     self.status_var.set(f"Wrote {output} - {summary['files_included']} files, {summary['tokens']} tokens")
                     if messagebox.askyesno("OneShot", "Bundle created. Open its folder?"):
                         os.startfile(Path(output).parent)  # type: ignore[attr-defined]
+                elif kind == "search_generated":
+                    output, match_count = payload  # type: ignore[misc]
+                    self.search_progress.configure(value=self.search_progress.cget("maximum"))
+                    self._set_busy(False)
+                    self.search_status_var.set(f"Wrote {match_count} matches to {output}")
+                elif kind == "search_error":
+                    self.search_progress.configure(value=0)
+                    self._set_busy(False)
+                    self.search_status_var.set("Search failed.")
+                    messagebox.showerror("Search failed", str(payload))
                 elif kind == "error":
                     self.progress.stop()
+                    self.search_progress.stop()
                     self._set_busy(False)
                     messagebox.showerror("OneShot", str(payload))
                     self.status_var.set("Operation failed.")

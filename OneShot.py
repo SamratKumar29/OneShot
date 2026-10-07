@@ -6,6 +6,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -221,6 +222,90 @@ def scan(target: Path, include_globs: Iterable[str] = (), use_gitignore: bool = 
             else:
                 add_file(path)
     return sorted(entries, key=lambda entry: (entry.path.lower(), not entry.is_directory))
+
+
+def search_file_lines(target: Path, filename_pattern: str, line_pattern: str,
+                      include_pattern_text: bool = False,
+                      selected_paths: set[str] | None = None,
+                      progress: Callable[[int, int], None] | None = None) -> list[tuple[str, str]]:
+    if not filename_pattern.strip():
+        raise ValueError("Enter a file name pattern.")
+    if not line_pattern:
+        raise ValueError("Enter content to look for.")
+
+    parts = line_pattern.split("*")
+    expression = ""
+    for index, prefix in enumerate(parts[:-1]):
+        suffix = parts[index + 1]
+        if prefix[-1:] in {"'", '"'} and suffix[:1] == prefix[-1:]:
+            expression += re.escape(prefix[:-1]) + "['\"](.*?)['\"]"
+            parts[index + 1] = suffix[1:]
+        else:
+            expression += re.escape(prefix) + "(.*?)"
+    expression += re.escape(parts[-1])
+    matcher = re.compile(expression)
+    results: list[tuple[str, str]] = []
+    entries = scan(target, include_globs=(filename_pattern.strip(),), read_content=False)
+    searchable = [
+        entry for entry in entries
+        if not entry.skipped and not entry.is_directory
+        and (selected_paths is None or entry.path in selected_paths)
+    ]
+    total = len(searchable)
+    for index, entry in enumerate(searchable, start=1):
+        source_path = target / entry.path if target.is_dir() else target
+        content, reason = classify_file(source_path)
+        if content is None or reason is not None:
+            if progress:
+                progress(index, total)
+            continue
+        for line in content.splitlines():
+            match = matcher.search(line)
+            if match:
+                value = match.group(0) if include_pattern_text or not match.groups() else "".join(match.groups())
+                results.append((entry.path, value))
+        if progress:
+            progress(index, total)
+    return results
+
+
+def render_search_results(results: Iterable[tuple[str, str]], output_format: str = "txt",
+                          order: str = "path_match") -> str:
+    if output_format not in {"md", "xml", "json", "txt"}:
+        raise ValueError(f"Unsupported search output format: {output_format}")
+    if order not in {"path_match", "match_path"}:
+        raise ValueError(f"Unsupported search result order: {order}")
+
+    results = list(results)
+    first_key, second_key = ("path", "match") if order == "path_match" else ("match", "path")
+    if output_format == "txt":
+        return "".join(
+            f"{path} : {match}\n" if order == "path_match" else f"{match} : {path}\n"
+            for path, match in results
+        )
+    if output_format == "md":
+        lines = [f"| {first_key.title()} | {second_key.title()} |", "| --- | --- |"]
+        for path, match in results:
+            values = {"path": path, "match": match}
+            first_value = values[first_key].replace("|", "\\|")
+            second_value = values[second_key].replace("|", "\\|")
+            lines.append(f"| {first_value} | {second_value} |")
+        return "\n".join(lines) + "\n"
+    if output_format == "json":
+        items = [
+            {first_key: path if first_key == "path" else match,
+             second_key: match if second_key == "match" else path}
+            for path, match in results
+        ]
+        return json.dumps({"results": items}, indent=2, ensure_ascii=False) + "\n"
+
+    root = ET.Element("searchResults")
+    for path, match in results:
+        result = ET.SubElement(root, "result")
+        values = {"path": path, "match": match}
+        for key in (first_key, second_key):
+            ET.SubElement(result, key).text = values[key]
+    return ET.tostring(root, encoding="unicode", xml_declaration=False) + "\n"
 
 
 def apply_manual_deselection(entries: list[FileEntry], deselected: set[str]) -> None:
